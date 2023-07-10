@@ -26,6 +26,7 @@ type MySQLConfig struct {
 	ReplicationRetryCount      int    `config:"replication_retry_count" yaml:"replication_retry_count"`
 	ReplicationConnectRetry    int    `config:"replication_connect_retry" yaml:"replication_connect_retry"`
 	ReplicationHeartbeatPeriod int    `config:"replication_heartbeat_period" yaml:"replication_heartbeat_period"`
+	ExternalReplicationSslCA   string `config:"external_replication_ssl_ca" yaml:"external_replication_ssl_ca"`
 	DataDir                    string `config:"data_dir" yaml:"data_dir"`
 	PidFile                    string `config:"pid_file" yaml:"pid_file"`
 	ErrorLog                   string `config:"error_log" yaml:"error_log"`
@@ -65,11 +66,13 @@ type Config struct {
 	HealthCheckInterval                     time.Duration       `config:"healthcheck_interval" yaml:"healthcheck_interval"`
 	InfoFileHandlerInterval                 time.Duration       `config:"info_file_handler_interval" yaml:"info_file_handler_interval"`
 	RecoveryCheckInterval                   time.Duration       `config:"recoverycheck_interval" yaml:"recoverycheck_interval"`
+	ExternalCAFileCheckInterval             time.Duration       `config:"external_ca_file_check_interval" yaml:"external_ca_file_check_interval"`
 	MaxAcceptableLag                        float64             `config:"max_acceptable_lag" yaml:"max_acceptable_lag"`
 	SlaveCatchUpTimeout                     time.Duration       `config:"slave_catch_up_timeout" yaml:"slave_catch_up_timeout"`
 	DisableSemiSyncReplicationOnMaintenance bool                `config:"disable_semi_sync_replication_on_maintenance" yaml:"disable_semi_sync_replication_on_maintenance"`
 	KeepSuperWritableOnCriticalDiskUsage    bool                `config:"keep_super_writable_on_critical_disk_usage" yaml:"keep_super_writable_on_critical_disk_usage"`
 	ExcludeUsers                            []string            `config:"exclude_users" yaml:"exclude_users"`
+	OfflineModeEnableInterval               time.Duration       `config:"offline_mode_enable_interval" yaml:"offline_mode_enable_interval"`
 	OfflineModeEnableLag                    time.Duration       `config:"offline_mode_enable_lag" yaml:"offline_mode_enable_lag"`
 	OfflineModeDisableLag                   time.Duration       `config:"offline_mode_disable_lag" yaml:"offline_mode_disable_lag"`
 	DisableSetReadonlyOnLost                bool                `config:"disable_set_readonly_on_lost" yaml:"disable_set_readonly_on_lost"`
@@ -84,6 +87,7 @@ type Config struct {
 	ReplicationRepairMaxAttempts            int                 `config:"replication_repair_max_attempts" yaml:"replication_repair_max_attempts"`
 	TestFilesystemReadonlyFile              string              `config:"test_filesystem_readonly_file" yaml:"test_filesystem_readonly_file"`
 	ReplicationChannel                      string              `config:"replication_channel" yaml:"replication_channel"`
+	ExternalReplicationChannel              string              `config:"external_replication_channel" yaml:"external_replication_channel"`
 }
 
 // DefaultConfig returns default configuration for MySync
@@ -125,6 +129,7 @@ func DefaultConfig() (Config, error) {
 			DataDir:                    "/var/lib/mysql",
 			PidFile:                    "/var/run/mysqld/mysqld.pid",
 			ErrorLog:                   "/var/log/mysql/error.log",
+			ExternalReplicationSslCA:   "/etc/mysql/ssl/external_CA.pem",
 		},
 		Queries:                                 map[string]string{},
 		Commands:                                map[string]string{},
@@ -143,11 +148,13 @@ func DefaultConfig() (Config, error) {
 		HealthCheckInterval:                     5 * time.Second,
 		InfoFileHandlerInterval:                 30 * time.Second,
 		RecoveryCheckInterval:                   5 * time.Second,
+		ExternalCAFileCheckInterval:             5 * time.Second,
 		MaxAcceptableLag:                        60.0,
 		SlaveCatchUpTimeout:                     30 * time.Minute,
 		DisableSemiSyncReplicationOnMaintenance: true,
 		KeepSuperWritableOnCriticalDiskUsage:    false,
 		ExcludeUsers:                            []string{},
+		OfflineModeEnableInterval:               15 * time.Minute,
 		OfflineModeEnableLag:                    24 * time.Hour,
 		OfflineModeDisableLag:                   30 * time.Second,
 		StreamFromReasonableLag:                 5 * time.Minute,
@@ -160,6 +167,7 @@ func DefaultConfig() (Config, error) {
 		ReplicationRepairMaxAttempts:            3,
 		TestFilesystemReadonlyFile:              "", // fake readonly status, only for docker tests
 		ReplicationChannel:                      "",
+		ExternalReplicationChannel:              "external",
 	}
 	return config, nil
 }

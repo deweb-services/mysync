@@ -230,6 +230,32 @@ func (app *App) stateFileHandler(ctx context.Context) {
 	}
 }
 
+// checks if update of external CA file required
+func (app *App) externalCAFileChecker(ctx context.Context) {
+	ticker := time.NewTicker(app.config.ExternalCAFileCheckInterval)
+	for {
+		select {
+		case <-ticker.C:
+			localNode := app.cluster.Local()
+			replicaStatus, err := localNode.GetExternalReplicaStatus()
+			if err != nil {
+				app.logger.Errorf("external CA file checker: host %s failed to get external replica status %v", localNode.Host(), err)
+				continue
+			}
+			if replicaStatus == nil {
+				app.logger.Infof("external CA file checker: no external replication found on host %v", localNode.Host())
+				continue
+			}
+			err = localNode.UpdateExternalCAFile()
+			if err != nil {
+				app.logger.Errorf("external CA file checker: failed check and update CA file: %s", err)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (app *App) SetResetupStatus() {
 	err := app.setResetupStatus(app.cluster.Local().Host(), app.doesResetupFileExist())
 	if err != nil {
@@ -318,7 +344,12 @@ func (app *App) checkCrashRecovery() {
 		app.logger.Errorf("recovery: failed to get local daemon state: %v", err)
 		return
 	}
-	app.logger.Debugf("recovery: daemon state: start time %s crash recovery time: %s", ds.StartTime, ds.RecoveryTime)
+	if !ds.StartTime.IsZero() {
+		app.logger.Debugf("recovery: daemon state: start time: %s", ds.StartTime)
+	}
+	if !ds.RecoveryTime.IsZero() {
+		app.logger.Debugf("recovery: daemon state: crash recovery time: %s", ds.RecoveryTime)
+	}
 	if !ds.CrashRecovery {
 		return
 	}
@@ -1317,6 +1348,14 @@ func (app *App) performSwitchover(clusterState map[string]*NodeState, activeNode
 		}
 	} else {
 		app.logger.Infof("switchover: old master %s does not need recovery", oldMaster)
+		err = oldMasterNode.StopExternalReplication()
+		if err != nil {
+			return fmt.Errorf("got error: %s while stopping external replication on old master: %s", err, oldMaster)
+		}
+		err = oldMasterNode.ResetExternalReplicationAll()
+		if err != nil {
+			return fmt.Errorf("got error: %s while reseting external replication on old master: %s", err, oldMaster)
+		}
 	}
 
 	// promote new master
@@ -1352,6 +1391,12 @@ func (app *App) performSwitchover(clusterState map[string]*NodeState, activeNode
 	}
 	if len(events) > 0 {
 		app.logger.Infof("switchover: events reenabled on %s: %v", newMaster, events)
+	}
+
+	// enable external replication
+	err = newMasterNode.SetExternalReplication()
+	if err != nil {
+		app.logger.Errorf("failed to set external replication on new master")
 	}
 
 	// set new master in dcs
@@ -1420,7 +1465,12 @@ func (app *App) repairMasterOfflineMode(host string, node *mysql.Node, state *No
 
 func (app *App) repairSlaveOfflineMode(host string, node *mysql.Node, state *NodeState, masterState *NodeState) {
 	if state.SlaveState != nil && state.SlaveState.ReplicationLag != nil {
+		replPermBroken, _ := state.IsReplicationPermanentlyBroken()
 		if state.IsOffline && *state.SlaveState.ReplicationLag <= app.config.OfflineModeDisableLag.Seconds() {
+			if replPermBroken {
+				app.logger.Infof("repair: replica %s is permanently broken, won't set online", host)
+				return
+			}
 			resetupStatus, err := app.GetResetupStatus(host)
 			if err != nil {
 				app.logger.Errorf("repair: failed to get resetup status from host %s: %v", host, err)
@@ -1451,6 +1501,25 @@ func (app *App) repairSlaveOfflineMode(host string, node *mysql.Node, state *Nod
 			} else {
 				app.logger.Infof("repair: slave %s set offline, because ReplicationLag (%f s) >= OfflineModeEnableLag (%v)",
 					host, *state.SlaveState.ReplicationLag, app.config.OfflineModeEnableLag)
+			}
+		}
+		// gradual transfer of permanently broken nodes to offline
+		lastShutdownNodeTime, err := app.GetLastShutdownNodeTime()
+		if err != nil {
+			app.logger.Errorf("repair: failed to get last shutdown node time: %s", err)
+			return
+		}
+		setOfflineIsPossible := time.Since(lastShutdownNodeTime) > app.config.OfflineModeEnableInterval
+		if !state.IsOffline && replPermBroken && setOfflineIsPossible {
+			err = app.UpdateLastShutdownNodeTime()
+			if err != nil {
+				app.logger.Errorf("repair: failed to update last shutdown node time: %s", err)
+			}
+			err = node.SetOffline()
+			if err != nil {
+				app.logger.Errorf("repair: failed to set slave %s offline: %s", host, err)
+			} else {
+				app.logger.Infof("repair: slave %s set offline, because replication permanently broken", host)
 			}
 		}
 	}
@@ -1736,7 +1805,7 @@ func (app *App) repairCascadeNode(node *mysql.Node, clusterState map[string]*Nod
 
 		if !isGTIDLessOrEqual(myGITIDs, candidateGTIDs) && !isGTIDLessOrEqual(candidateGTIDs, myGITIDs) {
 			app.logger.Errorf("repair: %s and %s are splitbrained...", host, upstreamCandidate)
-			app.writeEmergeFile("During cascade replica switch we found it splitbained")
+			app.writeEmergeFile("cascade replica splitbain detected")
 			return
 		}
 		if isGTIDLessOrEqual(myGITIDs, candidateGTIDs) {
@@ -1821,7 +1890,7 @@ func (app *App) leaveMaintenance() error {
 	clusterState := app.getClusterStateFromDB()
 	master, err := app.ensureCurrentMaster(clusterState)
 	if err != nil {
-		if errors.Is(err, ErrNoMaster) || errors.Is(err, ErrManyMasters) {
+		if errors.Is(err, ErrManyMasters) {
 			app.writeEmergeFile(err.Error())
 		}
 		return err
@@ -2223,6 +2292,15 @@ func (app *App) Run() int {
 	go app.healthChecker(ctx)
 	go app.recoveryChecker(ctx)
 	go app.stateFileHandler(ctx)
+	go app.externalCAFileChecker(ctx)
+
+	handlers := map[appState](func() appState){
+		stateFirstRun:    app.stateFirstRun,
+		stateManager:     app.stateManager,
+		stateCandidate:   app.stateCandidate,
+		stateLost:        app.stateLost,
+		stateMaintenance: app.stateMaintenance,
+	}
 
 	ticker := time.NewTicker(app.config.TickInterval)
 	for {
@@ -2231,13 +2309,7 @@ func (app *App) Run() int {
 			// run states without sleep while app.state changes
 			for {
 				app.logger.Infof("mysync state: %s", app.state)
-				stateHandler := map[appState](func() appState){
-					stateFirstRun:    app.stateFirstRun,
-					stateManager:     app.stateManager,
-					stateCandidate:   app.stateCandidate,
-					stateLost:        app.stateLost,
-					stateMaintenance: app.stateMaintenance,
-				}[app.state]
+				stateHandler := handlers[app.state]
 				if stateHandler == nil {
 					panic(fmt.Sprintf("unknown state: %s", app.state))
 				}

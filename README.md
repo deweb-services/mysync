@@ -66,6 +66,7 @@ keep_super_writable_on_critical_disk_usage: true
 db_set_ro_timeout: 30s
 db_set_ro_force_timeout: 60s
 priority_choice_max_lag: 60s
+offline_mode_enable_interval: 900s
 offline_mode_enable_lag: 86400s
 offline_mode_disable_lag: 300s
 disable_set_readonly_on_lost: False
@@ -103,6 +104,7 @@ mysql:
   replication_user: repl
   replication_password: ********
   replication_ssl_ca: /etc/mysql/ssl/allCAs.pem
+  external_replication_ssl_ca: /etc/mysql/ssl/external_CA.pem
   port: 3306
 
 stream_from_reasonable_lag: 5m
