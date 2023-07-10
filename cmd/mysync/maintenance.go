@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-
 	"github.com/yandex/mysync/internal/app"
 )
 
